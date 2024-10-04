@@ -1,0 +1,38 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<config xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">
+    <networks xmlns="urn:ietf:params:xml:ns:yang:ietf-network">
+        <network>
+            <network-id>lsi</network-id>
+            <node>
+                <node-id>load0</node-id>
+                <description>et3504</description>
+                <netconf-connect-params xmlns="urn:tntapi:netconf-node">
+                    <user>pi</user>
+                    <server>10.13.37.106</server>
+                    <password>grimbadgerassault</password>
+                    <ncport>830</ncport>
+                </netconf-connect-params>
+            </node>
+            <node>
+                <node-id>power0</node-id>
+                <description>gpib-interface</description>
+                <netconf-connect-params xmlns="urn:tntapi:netconf-node">
+                    <user>pi</user>
+                    <server>10.13.37.153</server>
+                    <password>grimbadgerassault</password>
+                    <ncport>830</ncport>
+                </netconf-connect-params>
+            </node>
+            <node>
+                <node-id>scope0</node-id>
+                <description>gpib-interface</description>
+                <netconf-connect-params xmlns="urn:tntapi:netconf-node">
+                    <user>pi</user>
+                    <server>10.13.37.153</server>
+                    <password>grimbadgerassault</password>
+                    <ncport>830</ncport>
+                </netconf-connect-params>
+            </node>
+        </network>
+    </networks>
+</config>
