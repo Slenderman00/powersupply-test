@@ -35,6 +35,7 @@ args = parser.parse_args()
 tree = etree.parse(args.config)
 network = tree.xpath("/nc:config/nd:networks/nd:network", namespaces=namespaces)[0]
 
+conns_notification = tntapi.network_connect(network)
 conns = tntapi.network_connect(network)
 yconns = tntapi.network_connect_yangrpc(network)
 
@@ -117,7 +118,7 @@ class scope:
 
         print(rpc_xml_str % {"filter": filter})
 
-        result = self.conns[self.node_name].rpc(rpc_xml_str % {"filter": filter})
+        result = conns_notification[self.node_name].rpc(rpc_xml_str % {"filter": filter})
         rpc_error = result.xpath("rpc-error")
         assert len(rpc_error) == 0
 
@@ -171,7 +172,7 @@ class scope:
 
     def recieve(self):
         while 1:
-            (notification_xml, ret) = self.conns[self.node_name].receive()
+            (notification_xml, ret) = conns_notification[self.node_name].receive()
             # print(f"# {notification_xml}")
             if ret != 1:  # timeout
                 break
