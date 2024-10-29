@@ -103,12 +103,12 @@ def get_load_data(node_name="load0"):
     state_wo_ns = tntapi.strip_namespaces(state)
     voltage = state_wo_ns.xpath(
         "node[node-id='%s']/data/load-state/channel[name='%s']/measurement/voltage"
-        % (node_name, "out2")
+        % (node_name, "out1")
     )[0].text
     voltage = float(voltage)
     current = state_wo_ns.xpath(
         "node[node-id='%s']/data/load-state/channel[name='%s']/measurement/current"
-        % (node_name, "out2")
+        % (node_name, "out1")
     )[0].text
     current = float(current)
 
@@ -256,8 +256,8 @@ class scope:
 
         # print(f"# {etree.tostring(data[0])}")
         def map(i):
-            return ((i) / 100) * scope_channel_range
-
+            return ((i) / 100)
+ 
         applyall = np.vectorize(map)
         signal = applyall(signal)
 
@@ -285,11 +285,19 @@ def data_to_signal(data, range=16):
     signal = spf.readframes(-1)
     signal = np.frombuffer(signal, np.int8)
 
+    print('------------------------------------------------------------')
+    print(signal)
+    print('------------------------------------------------------------')
+
     def map(i):
-        return ((i) / 100) * range
+        return ((i + 127) / 100) * 16
 
     applyall = np.vectorize(map)
     signal = applyall(signal)
+
+    print('------------------------------------------------------------')
+    print(signal)
+    print('------------------------------------------------------------')
 
     return signal
 
@@ -405,11 +413,11 @@ def callback(voltage):
 
 
 def sweep_sweep(
-    min_voltage=48,
+    min_voltage=30,
     max_voltage=50,
     voltage_step=2,
     voltage_node_name="power0",
-    start_resistance=2,
+    start_resistance=8,
     resistance_step=-0.5,
     voltage_threshold=4.6,
     resistance_pass=2,
@@ -441,9 +449,9 @@ def sweep_sweep(
             data = capture_startup(load=resistance, voltage=voltage, load_node_name=load_node_name, scope_node_name=scope_node_name, power_node_name=voltage_node_name)
 
             write(data, f"resistance_{resistance}_startup.wav")
-            # _voltage, _ = get_load_data(load_node_name)
-            _voltage = get_average_voltage(data)
-            current = _voltage / resistance
+            _voltage, current = get_load_data(load_node_name)
+            # _voltage = get_average_voltage(data)
+            # current = _voltage / resistance
             currents.append(current)
             loads.append(resistance)
             voltages.append(_voltage)
