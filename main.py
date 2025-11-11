@@ -89,7 +89,7 @@ def voltage_sweep(callback, min=10, max=48, step=1, node_name="power0"):
 def set_resistance(resistance, node_name="load0"):
     yangcli(
         yconns[node_name],
-        f"replace /lsi-ivi-load:load/channel[name='out1'] -- resistance={format(resistance, '.9f')}",
+        f"replace /lsi-ivi-load:load/channel[name='out1'] -- resistance={format(resistance, '.9f')} transient-frequency=0",
     ).xpath("./ok")
     tntapi.network_commit(conns)
 
@@ -248,7 +248,7 @@ class scope:
 
         # Extract Raw Audio from Wav File
         signal = spf.readframes(-1)
-        signal = np.frombuffer(signal, np.int8)
+        signal = np.frombuffer(signal, np.uint8)
 
         # Signal from 50 to - 50
 
@@ -283,14 +283,14 @@ def data_to_signal(data, range=16):
 
     # Extract Raw Audio from Wav File
     signal = spf.readframes(-1)
-    signal = np.frombuffer(signal, np.int8)
+    signal = np.frombuffer(signal, np.uint8)
 
     print('------------------------------------------------------------')
     print(signal)
     print('------------------------------------------------------------')
 
     def map(i):
-        return ((i + 127) / 100) * 16
+        return ((i - 128) / 100) * 16# ((i + 127) / 100) * 16
 
     applyall = np.vectorize(map)
     signal = applyall(signal)
@@ -335,7 +335,7 @@ def plot(data, range, currents, volts, loads):
     axs[0].set_title("Boot")
     axs[0].set_ylabel("Voltage")
     axs[0].axhline(y=5, color="r", linestyle="-")
-    axs[0].set_ylim(ymin=0, ymax=6)
+    #axs[0].set_ylim(ymin=0, ymax=6)
     axs[0].relim()
     axs[0].autoscale_view()
 
@@ -347,7 +347,7 @@ def plot(data, range, currents, volts, loads):
     axs[1].set_title("Current over Load")
     axs[1].set_xlabel("Load")
     axs[1].set_ylabel("Current")
-    axs[1].set_ylim(ymin=0, ymax=3)
+    axs[1].set_ylim(ymin=0, ymax=6)
     axs[1].relim()
     axs[1].autoscale_view()
 
@@ -413,14 +413,14 @@ def callback(voltage):
 
 
 def sweep_sweep(
-    min_voltage=30,
-    max_voltage=50,
-    voltage_step=2,
+    min_voltage=44,
+    max_voltage=57,
+    voltage_step=1,
     voltage_node_name="power0",
-    start_resistance=8,
+    start_resistance=5,
     resistance_step=-0.5,
-    voltage_threshold=4.6,
-    resistance_pass=2,
+    voltage_threshold=4,
+    resistance_pass=0.5,
     run_until_failure=False,
     run_until_failure_step=-0.05,
     load_node_name="load0",
@@ -438,7 +438,7 @@ def sweep_sweep(
 
         resistance = start_resistance
         print(f"# input voltage {voltage} volts")
-        # set_voltage_dual(voltage, node_name=voltage_node_name)
+        set_voltage_dual(voltage, node_name=voltage_node_name)
 
         currents = []
         voltages = []
