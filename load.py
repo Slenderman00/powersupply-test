@@ -2,7 +2,7 @@ import tntapi
 from yangcli import yangcli
 
 class Load:
-    def __init__(self, conns, yconns, network, node_name="load0"):
+    def __init__(self, yconns, conns, network, node_name="load0"):
         self.yconns = yconns
         self.conns = conns
         self.network = network
@@ -14,7 +14,7 @@ class Load:
 
     def set_resistance(self, resistance):
         yangcli(
-            self.conns[self.node_name],
+            self.yconns[self.node_name],
             f"replace /lsi-ivi-load:load/channel[name='out1'] -- resistance={format(resistance, '.9f')} transient-frequency=0",
         ).xpath("./ok")
         tntapi.network_commit(self.conns)

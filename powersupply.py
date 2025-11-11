@@ -30,12 +30,12 @@ class Power:
 
     def set_voltage_dual(self, voltage):
         yangcli(
-            self.conns[self.node_name],
+            self.yconns[self.node_name],
             """replace /outputs/output[name='out1'] -- voltage-level=%.9f current-limit=%.9f"""
             % (voltage, 0.5),
         ).xpath("./ok")
         yangcli(
-            self.conns[self.node_name],
+            self.yconns[self.node_name],
             """replace /outputs/output[name='out2'] -- voltage-level=%.9f current-limit=%.9f"""
             % (voltage, 0.5),
         ).xpath("./ok")
