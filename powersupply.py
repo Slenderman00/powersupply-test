@@ -25,7 +25,7 @@ class Power:
     def delete_voltage_dual(self):
         yangcli(self.yconns[self.node_name], "delete /outputs/output[name='out1']").xpath("./ok")
         yangcli(self.yconns[self.node_name], "delete /outputs/output[name='out2']").xpath("./ok")
-        self.tntapi.network_commit(self.conns)
+        tntapi.network_commit(self.conns)
 
 
     def set_voltage_dual(self, voltage):
@@ -39,7 +39,7 @@ class Power:
             """replace /outputs/output[name='out2'] -- voltage-level=%.9f current-limit=%.9f"""
             % (voltage, 0.5),
         ).xpath("./ok")
-        self.tntapi.network_commit(self.conns)
+        tntapi.network_commit(self.conns)
 
 
     def voltage_sweep(self, callback, min=10, max=48, step=1, node_name="power0"):
