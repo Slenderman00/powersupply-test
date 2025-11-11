@@ -34,7 +34,7 @@ class Load:
         voltage = float(voltage)
         current = state_wo_ns.xpath(
             "node[node-id='%s']/data/load-state/channel[name='%s']/measurement/current"
-            % (node_name, "out1")
+            % (self.node_name, "out1")
         )[0].text
         current = float(current)
 
