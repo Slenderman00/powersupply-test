@@ -82,11 +82,11 @@ class Scope:
 
         self.scope_channel_name = scope_channel_name
 
-        tntapi.network_commit(conns)
+        tntapi.network_commit(self.conns)
 
     def recieve(self):
         while 1:
-            (notification_xml, ret) = conns[self.node_name].receive()
+            (notification_xml, ret) = self.conns[self.node_name].receive()
             # print(f"# {notification_xml}")
             if ret != 1:  # timeout
                 break
