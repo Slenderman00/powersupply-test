@@ -39,8 +39,8 @@ conns = tntapi.network_connect(network)
 yconns = tntapi.network_connect_yangrpc(network)
 
 # GLOBAL instrument instances (node names fixed for this run)
-POWER = Power(conns, yconns, node_name="raspberrypi")
-LOAD = Load(conns, yconns, network, node_name="raspberrypi")
+POWER = Power(yconns, conns, node_name="raspberrypi")
+LOAD = Load(yconns, conns, network, node_name="raspberrypi")
 SCOPE = Scope(yconns, conns, node_name="raspberrypi")
 
 # Initialize figure and axes globally
