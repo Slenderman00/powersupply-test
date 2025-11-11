@@ -185,8 +185,8 @@ def sweep_sweep(
     scope_node_name="scope0",
 ):
     # Instantiate instruments for the requested nodes
-    pwr = Power(conns, yconns, node_name=voltage_node_name)
-    load = Load(conns, yconns, network, node_name=load_node_name)
+    pwr = Power(yconns, conns, node_name=voltage_node_name)
+    load = Load(yconns, conns, network, node_name=load_node_name)
     scp = Scope(yconns, conns, node_name=scope_node_name)
 
     # Fresh state

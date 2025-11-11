@@ -2,7 +2,7 @@ import tntapi
 from yangcli import yangcli
 
 class Power:
-    def __init__(self, conns, yconns, node_name="power0"):
+    def __init__(self, yconns, conns, node_name="power0"):
         self.conns = conns
         self.yconns = yconns
         self.node_name = node_name
