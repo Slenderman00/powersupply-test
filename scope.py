@@ -32,7 +32,7 @@ class Scope:
 
         print(rpc_xml_str % {"filter": filter})
 
-        result = conns[self.node_name].rpc(rpc_xml_str % {"filter": filter})
+        result = self.conns[self.node_name].rpc(rpc_xml_str % {"filter": filter})
         rpc_error = result.xpath("rpc-error")
         assert len(rpc_error) == 0
 
