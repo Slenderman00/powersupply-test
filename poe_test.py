@@ -136,7 +136,7 @@ ax2d_i = None
 
 def init_plots():
     global fig3d, ax3d, fig2d, ax2d_v, ax2d_i
-    if args.no-plot:
+    if args.no_plot:
         return
     plt.ion()
     # 3D: X=Vin, Y=Requested I (A), Z=Vout
@@ -161,7 +161,7 @@ def init_plots():
     fig2d.canvas.draw(); fig2d.canvas.flush_events()
 
 def update_plots(all_points, current_vin):
-    if args.no-plot:
+    if args.no_plot:
         return
     # all_points: list of dicts with keys: vin, req_i, meas_i, vout, pass
     # 3D scatter (incremental)
@@ -357,7 +357,7 @@ def main():
         except Exception:
             pass
 
-        if not args.no-plot:
+        if not args.no_plot:
             try:
                 plt.savefig(os.path.join(get_path(), f"plot_{vin:.2f}V.png"))
             except Exception:
@@ -374,7 +374,7 @@ def main():
             pass
 
     print(f"\nDone. CSV written to: {csv_path}")
-    if not args.no-plot:
+    if not args.no_plot:
         plt.ioff()
         plt.show(block=False)
 
