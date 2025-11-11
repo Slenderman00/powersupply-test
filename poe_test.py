@@ -1,30 +1,26 @@
-
 #!/usr/bin/python3
-# -*- coding: utf-8 -*-
 
-import argparse
-import base64
-import csv
-import io
-import json
-import os
-import sys
-import time
-from datetime import datetime
-
-import matplotlib.pyplot as plt
-import numpy as np
 from lxml import etree
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (needed for 3D)
+import time
+import sys, os
+import argparse
 import tntapi
 import yangrpc
 from yangcli import yangcli
+import base64
+import matplotlib.pyplot as plt
+import numpy as np
+import io
+import wave
 from storageBucket import storageBucket
+import json
 
 from powersupply import Power
 from load import Load
 from scope import Scope
-import wave
+
+from datetime import datetime
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 namespaces = {
     "nc": "urn:ietf:params:xml:ns:netconf:base:1.0",
@@ -32,351 +28,332 @@ namespaces = {
     "nt": "urn:ietf:params:xml:ns:yang:ietf-network-topology",
 }
 
-# --------------------------
+# -----------------------------
 # CLI
-# --------------------------
-parser = argparse.ArgumentParser(description="PoE shield PSU test with live 3D plot and CSV output.")
-
-# Required infra
+# -----------------------------
+parser = argparse.ArgumentParser(description="PoE shield PSU test (original flow + CLI, 3D live & CSV).")
 parser.add_argument(
-    "--config",
-    required=True,
-    help="Path to the NETCONF config XML (ietf-networks + topology). E.g. ../networks.xml",
+    "--config", required=True,
+    help="Path to the netconf configuration *.xml file defining the configuration according to ietf-networks, ietf-networks-topology and netconf-node models e.g. ../networks.xml",
 )
-
-# Node names (default to your 'raspberrypi' nodes)
 parser.add_argument("--power-node", default="raspberrypi", help="Power supply node name")
-parser.add_argument("--load-node", default="raspberrypi", help="Electronic load node name")
+parser.add_argument("--load-node", default="raspberrypi", help="Load node name")
 parser.add_argument("--scope-node", default="raspberrypi", help="Scope node name")
 
-# PoE defaults (44–57 V typical for 802.3af/at)
-parser.add_argument("--min-v", type=float, default=44.0, help="Minimum input voltage (V)")
-parser.add_argument("--max-v", type=float, default=57.0, help="Maximum input voltage (V) (inclusive)")
-parser.add_argument("--v-step", type=float, default=0.5, help="Voltage step (V). Supports fractional steps.")
+# PoE sweep
+parser.add_argument("--min-v", type=float, default=44.0, help="Minimum PoE input voltage (V)")
+parser.add_argument("--max-v", type=float, default=57.0, help="Maximum PoE input voltage (V), inclusive")
+parser.add_argument("--v-step", type=float, default=1.0, help="Voltage step (V). Supports floats")
 
-# Output regulation test params
-parser.add_argument("--start-current", type=float, default=5.0, help="Starting draw (A) at each input voltage")
-parser.add_argument("--min-current", type=float, default=0.2, help="Lowest current to try before giving up (A)")
-parser.add_argument("--current-step", type=float, default=-0.25, help="Current step (A); negative to step down")
-parser.add_argument("--vout-pass-threshold", type=float, default=4.75,
-                    help="Minimum acceptable output voltage to count as passing (V)")
+# Current / resistance behavior
+parser.add_argument("--start-current", type=float, default=5.0, help="Start draw (A) at each Vin (default 5A)")
+parser.add_argument("--resistance-step", type=float, default=0.5, help="How much to increase resistance per step (Ω)")
+parser.add_argument("--min-current", type=float, default=0.2, help="Stop if requested current would go below this (A)")
+parser.add_argument("--vout-threshold", type=float, default=4.75, help="Pass threshold for DUT 5V rail (V)")
 
-# Scope acquisition / retries
-parser.add_argument("--scope-threshold", type=float, default=1.0,
-                    help="Scope load threshold trigger (arbitrary, forwarded to scope)")
-parser.add_argument("--scope-samples", type=int, default=1000, help="Scope samples")
-parser.add_argument("--scope-rate", type=int, default=20000, help="Scope sample rate (Hz)")
-parser.add_argument("--scope-channel", default="ch1", help="Scope channel")
-parser.add_argument("--scope-retries", type=int, default=3, help="Retries on scope errors per (Vin, I) point")
-parser.add_argument("--scope-retry-delay", type=float, default=0.5, help="Delay between scope retries (s)")
+# Scope robustness
+parser.add_argument("--scope-retries", type=int, default=3, help="Retries when scope recieve() errors")
+parser.add_argument("--scope-retry-delay", type=float, default=0.3, help="Delay between scope retries (s)")
+parser.add_argument("--samples", type=int, default=1000, help="Scope samples")
+parser.add_argument("--sample-rate", type=float, default=20000.0, help="Scope sample rate (Hz)")
+parser.add_argument("--trigger-source", default="ch1", help="Scope trigger/source channel")
+parser.add_argument("--trigger-level", type=float, default=1.0, help="Scope trigger level")
+parser.add_argument("--trigger-slope", default="positive", help="Scope trigger slope")
+parser.add_argument("--scope-range", type=float, default=16.0, help="Scope channel range")
 
-# Plot
-parser.add_argument("--no-plot", action="store_true", help="Disable live plotting (useful for headless runs)")
+# Output artifacts
+parser.add_argument("--out-dir", default="results", help="Directory for CSV and plots")
+parser.add_argument("--tag", default="", help="Optional tag for filenames")
 
-# CSV / artifacts
-parser.add_argument("--out-dir", default="results", help="Directory to write CSV & artifacts")
-parser.add_argument("--tag", default="", help="Optional tag to include in output filename")
+# Live plotting controls
+parser.add_argument("--no-3d", action="store_true", help="Disable the extra live 3D plot")
 
 args = parser.parse_args()
 
-# --------------------------
-# NETCONF infra
-# --------------------------
+# -----------------------------
+# NETCONF init
+# -----------------------------
 tree = etree.parse(args.config)
 network = tree.xpath("/nc:config/nd:networks/nd:network", namespaces=namespaces)[0]
 
 conns = tntapi.network_connect(network)
 yconns = tntapi.network_connect_yangrpc(network)
 
-# GLOBAL instrument instances (node names fixed for this run)
+# GLOBAL instrument instances (node names from CLI)
 POWER = Power(yconns, conns, node_name=args.power_node)
 LOAD = Load(yconns, conns, network, node_name=args.load_node)
 SCOPE = Scope(yconns, conns, node_name=args.scope_node)
 
-# --------------------------
-# Helpers
-# --------------------------
-def data_to_signal(data, rng=16):
+# Initialize figure and axes globally (your 2D)
+fig, axs = None, None
+
+# Optional 3D
+fig3d, ax3d = None, None
+xs3d, ys3d, zs3d = [], [], []
+
+def data_to_signal(data, range=16):
     f = io.BytesIO(data)
     spf = wave.open(f, "r")
     signal = spf.readframes(-1)
     signal = np.frombuffer(signal, np.uint8)
-    # Map 0..255 -> approx ±rng/?
-    def _map(i):
-        return ((i - 128) / 100.0) * rng
-    return np.vectorize(_map)(signal)
+    def map(i):
+        return ((i - 128) / 100) * range
+    signal = np.vectorize(map)(signal)
+    return signal
 
 def get_average_voltage(data):
     signal = data_to_signal(data)
     half = signal[800:]
-    voltage = float(np.average(half))
+    voltage = np.average(half)
     return voltage
 
-def inclusive_arange(start, stop, step):
-    # numpy.arange may miss the last step due to FP; include last point if close
-    n = int(np.floor((stop - start) / step + 0.5))
-    xs = np.array([start + i * step for i in range(n + 1)], dtype=float)
-    xs[-1] = stop
-    return xs
+def plot(data, range, currents, volts, loads):
+    global fig, axs
 
-def current_to_resistance(target_current_a, v_nominal=5.0):
-    # R = V / I  (avoid division by ~0)
-    if target_current_a <= 0:
-        return 9999.0
-    return v_nominal / target_current_a
-
-# --------------------------
-# Live plots (3D + quick 2D)
-# --------------------------
-fig3d = None
-ax3d = None
-fig2d = None
-ax2d_v = None
-ax2d_i = None
-
-def init_plots():
-    global fig3d, ax3d, fig2d, ax2d_v, ax2d_i
-    if args.no_plot:
-        return
     plt.ion()
-    # 3D: X=Vin, Y=Requested I (A), Z=Vout
-    fig3d = plt.figure(figsize=(9, 8))
-    ax3d = fig3d.add_subplot(111, projection='3d')
-    ax3d.set_xlabel("Input Voltage (V)")
-    ax3d.set_ylabel("Requested Current (A)")
-    ax3d.set_zlabel("Output Voltage (V)")
-    ax3d.set_title("Live PoE PSU Sweep (3D)")
 
-    # 2D helper: Vout vs requested I at latest Vin
-    fig2d, (ax2d_v, ax2d_i) = plt.subplots(2, 1, figsize=(8, 8))
-    ax2d_v.set_title("Vout vs Requested Current (latest Vin)")
-    ax2d_v.set_xlabel("Requested Current (A)")
-    ax2d_v.set_ylabel("Vout (V)")
-    ax2d_v.axhline(y=args.vout_pass_threshold, linestyle='--')
+    if fig is None or not plt.fignum_exists(fig.number if fig else 0):
+        fig, axs = plt.subplots(3, 1, figsize=(10, 15))
+        fig.show()
+        axs[1].invert_xaxis()
+        axs[2].invert_xaxis()
 
-    ax2d_i.set_title("Measured Current vs Requested Current (latest Vin)")
-    ax2d_i.set_xlabel("Requested Current (A)")
-    ax2d_i.set_ylabel("Measured Current (A)")
-    fig3d.canvas.draw(); fig3d.canvas.flush_events()
-    fig2d.canvas.draw(); fig2d.canvas.flush_events()
+    signal = data_to_signal(data, range)
 
-def update_plots(all_points, current_vin):
-    if args.no_plot:
-        return
-    # all_points: list of dicts with keys: vin, req_i, meas_i, vout, pass
-    # 3D scatter (incremental)
-    xs = [p["vin"] for p in all_points]
-    ys = [p["req_i"] for p in all_points]
-    zs = [p["vout"] for p in all_points]
-    colors = ['g' if p["pass"] else 'r' for p in all_points]
+    if axs[0].lines:
+        axs[0].lines[0].set_ydata(signal)
+    else:
+        axs[0].plot(signal)
+    axs[0].set_title("Boot")
+    axs[0].set_ylabel("Voltage")
+    axs[0].axhline(y=5, color="r", linestyle="-")
+    axs[0].relim()
+    axs[0].autoscale_view()
 
-    ax3d.clear()
-    ax3d.set_xlabel("Input Voltage (V)")
-    ax3d.set_ylabel("Requested Current (A)")
-    ax3d.set_zlabel("Output Voltage (V)")
-    ax3d.set_title("Live PoE PSU Sweep (3D)")
-    ax3d.scatter(xs, ys, zs, c=colors, depthshade=True)
-    ax3d.axhline(y=args.vout_pass_threshold)  # projected line
+    if axs[1].lines:
+        axs[1].lines[0].set_data(loads, currents)
+    else:
+        axs[1].plot(loads, currents)
+    axs[1].set_title("Current over Load")
+    axs[1].set_xlabel("Load")
+    axs[1].set_ylabel("Current")
+    axs[1].set_ylim(ymin=0, ymax=6)
+    axs[1].relim()
+    axs[1].autoscale_view()
 
-    # 2D: filter for latest Vin
-    curr = [p for p in all_points if abs(p["vin"] - current_vin) < 1e-6]
-    curr_sorted = sorted(curr, key=lambda p: p["req_i"])
-    ax2d_v.clear(); ax2d_i.clear()
-    if curr_sorted:
-        ax2d_v.plot([p["req_i"] for p in curr_sorted], [p["vout"] for p in curr_sorted])
-        ax2d_v.axhline(y=args.vout_pass_threshold, linestyle='--')
-        ax2d_v.set_title(f"Vout vs Requested Current @ Vin={current_vin:.2f} V")
-        ax2d_v.set_xlabel("Requested Current (A)")
-        ax2d_v.set_ylabel("Vout (V)")
+    if axs[2].lines:
+        axs[2].lines[0].set_data(loads, volts)
+    else:
+        axs[2].plot(loads, volts)
+    axs[2].set_title("Voltage over Load")
+    axs[2].set_xlabel("Load")
+    axs[2].set_ylabel("Voltage")
+    axs[2].axhline(y=5, color="r", linestyle="-")
+    axs[2].set_ylim(ymin=0, ymax=6)
+    axs[2].relim()
+    axs[2].autoscale_view()
 
-        ax2d_i.plot([p["req_i"] for p in curr_sorted], [p["meas_i"] for p in curr_sorted])
-        ax2d_i.set_title(f"Measured I vs Requested I @ Vin={current_vin:.2f} V")
-        ax2d_i.set_xlabel("Requested Current (A)")
-        ax2d_i.set_ylabel("Measured Current (A)")
-    fig3d.canvas.draw(); fig3d.canvas.flush_events()
-    fig2d.canvas.draw(); fig2d.canvas.flush_events()
+    fig.canvas.draw()
+    fig.canvas.flush_events()
     plt.pause(0.001)
 
-# --------------------------
-# Instrument ops
-# --------------------------
-def capture_startup(resistance, vin):
+def plot3d_update(vin, req_current, vout):
+    """Extra live 3D scatter (Vin, Ireq, Vout) without touching your 2D plots."""
+    global fig3d, ax3d, xs3d, ys3d, zs3d
+    if args.no_3d:
+        return
+    plt.ion()
+    if fig3d is None or not plt.fignum_exists(fig3d.number if fig3d else 0):
+        fig3d = plt.figure(figsize=(7,6))
+        ax3d = fig3d.add_subplot(111, projection="3d")
+        ax3d.set_xlabel("Vin (V)")
+        ax3d.set_ylabel("Requested I (A)")
+        ax3d.set_zlabel("Vout (V)")
+        ax3d.set_title("Live PoE sweep (3D)")
+    xs3d.append(vin); ys3d.append(req_current); zs3d.append(vout)
+    ax3d.cla()
+    ax3d.set_xlabel("Vin (V)")
+    ax3d.set_ylabel("Requested I (A)")
+    ax3d.set_zlabel("Vout (V)")
+    ax3d.set_title("Live PoE sweep (3D)")
+    ax3d.scatter(xs3d, ys3d, zs3d)
+    fig3d.canvas.draw(); fig3d.canvas.flush_events()
+    plt.pause(0.001)
+
+def capture_startup(
+    load_threshold=1, load=5, voltage=12,
+    load_node_name="load0", scope_node_name="scope0", power_node_name='power0'
+):
     """
-    Arm scope, set load, then apply input voltage; return raw scope data (wav bytes).
+    Keep your original ordering:
+      1) POWER.delete_voltage_dual()
+      2) LOAD.set_resistance(load)
+      3) SCOPE.start_acquisition(...)
+      4) POWER.set_voltage_dual(voltage)
+      5) SCOPE.recieve()  (with small retry loop only)
     """
-    # Reset / set state
     POWER.delete_voltage_dual()
+    LOAD.set_resistance(load)
+    SCOPE.start_acquisition(args.samples, args.sample_rate,
+                            args.trigger_source, args.trigger_slope,
+                            load_threshold, args.trigger_source, args.scope_range, "-")
+    POWER.set_voltage_dual(voltage)
+
+    last_err = None
+    for attempt in range(1, args.scope_retries + 1):
+        try:
+            data = SCOPE.recieve()
+            return data
+        except Exception as e:
+            last_err = e
+            print(f"[scope recieve() error] attempt {attempt}/{args.scope_retries}: {e}")
+            time.sleep(args.scope_retry_delay)
+    # If all retries failed, re-raise to be handled by caller (repeat current test point)
+    raise last_err if last_err else RuntimeError("scope recieve() failed")
+
+def load_sweep(resistance=5, step=-1, threshold=4.6, node_name="load0"):
     LOAD.set_resistance(resistance)
-    SCOPE.start_acquisition(
-        args.scope_samples, args.scope_rate,
-        args.scope_channel, "positive",
-        args.scope_threshold, args.scope_channel,
-        16, "-"
-    )
-    POWER.set_voltage_dual(vin)
-    data = SCOPE.recieve()
-    return data
+    voltage = 9999
+    while voltage > threshold:
+        LOAD.set_resistance(resistance)
+        voltage, current = LOAD.get_load_data()
+        print(f"# {resistance} Ohm, {voltage} v, {current} l")
+        resistance = resistance + step
+    return (resistance, voltage)
 
-def get_load_snapshot():
-    vout, i_meas = LOAD.get_load_data()
-    return float(vout), float(i_meas)
+def callback(voltage):
+    resistance, _voltage = load_sweep(8, -0.5, 4.5)
+    print(f"# powersupply died at {resistance} ohm producing {_voltage} volts with {voltage} volts as input")
 
-# --------------------------
-# Main sweep
-# --------------------------
-def main():
-    # Ensure output dir
-    os.makedirs(args.out_dir, exist_ok=True)
+def _inclusive_voltages(vmin, vmax, vstep):
+    vals = []
+    v = vmin
+    # guard floating point drift
+    eps = abs(vstep) * 1e-6 + 1e-9
+    while v <= vmax + eps:
+        vals.append(round(v, 6))
+        v += vstep
+    # ensure last is exactly vmax
+    if abs(vals[-1] - vmax) > eps:
+        vals.append(vmax)
+    return vals
 
-    # Build filename stem
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    tag = f"_{args.tag}" if args.tag else ""
-    fname_stem = (
-        f"poe_sweep_min{args.min_v}_max{args.max_v}_step{args.v_step}"
-        f"_Istart{args.start_current}_Istep{args.current_step}"
-        f"_Vth{args.vout_pass_threshold}{tag}_{timestamp}"
-    ).replace(".", "p")
+def sweep_sweep(
+    min_voltage=44,
+    max_voltage=57,
+    voltage_step=1.0,
+    voltage_node_name="power0",
+    # start at 5A -> ~1.0 Ω
+    start_current=5.0,
+    resistance_step=0.5,   # increase R -> lower current
+    voltage_threshold=4.75,
+    resistance_pass=None,  # unused in current algo
+    run_until_failure=False,
+    run_until_failure_step=-0.05,
+    load_node_name="load0",
+    scope_node_name="scope0",
+):
+    LOAD.delete_load()
+    POWER.delete_powersupply()
 
-    csv_path = os.path.join(args.out_dir, f"{fname_stem}.csv")
-
-    # Init CSV
-    with open(csv_path, "w", newline="") as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow([
-            "input_voltage_v", "requested_current_a", "measured_current_a",
-            "output_voltage_v", "computed_resistance_ohm", "pass", "attempt"
-        ])
-
-    # Storage bucket per Vin (kept from your code)
     storage = storageBucket()
 
-    # Initialize instruments cleanly
-    try:
-        LOAD.delete_load()
-    except Exception:
-        pass
-    try:
-        POWER.delete_powersupply()
-    except Exception:
-        pass
+    # CSV setup
+    os.makedirs(args.out_dir, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    tag = f"_{args.tag}" if args.tag else ""
+    csv_name = (
+        f"poe_sweep_min{min_voltage}_max{max_voltage}_step{voltage_step}"
+        f"_Istart{start_current}_Rstep{resistance_step}_Vth{voltage_threshold}{tag}_{ts}.csv"
+    ).replace(".", "p")
+    csv_path = os.path.join(args.out_dir, csv_name)
+    with open(csv_path, "w") as f:
+        f.write("vin_v,requested_current_a,measured_current_a,vout_v,resistance_ohm,pass\n")
 
-    init_plots()
-    all_points = []
+    # iterate voltages (float-inclusive)
+    for voltage in _inclusive_voltages(min_voltage, max_voltage, voltage_step):
+        write, get_path = storage.create_folder(voltage)
 
-    # Iterate Vin with inclusive fractional steps
-    for vin in inclusive_arange(args.min_v, args.max_v, args.v_step):
-        print(f"\n### Input voltage {vin:.2f} V")
-        write, get_path = storage.create_folder(vin)
+        # Start at 5A draw => ~1.0 Ω
+        if start_current <= 0:
+            start_resistance = 9999.0
+        else:
+            start_resistance = 5.0 / start_current
 
-        # Start at 5 A (default) -> resistance ~ 1 Ω, step current downward (increase R)
-        req_i = args.start_current
-        last_status_pass = None
+        resistance = start_resistance
+        print(f"# input voltage {voltage} volts")
+        POWER.set_voltage_dual(voltage)
 
-        vin_points = []
+        currents = []
+        voltages = []
+        loads = []
 
-        while req_i >= args.min_current - 1e-9:
-            R = current_to_resistance(req_i)
+        # We'll lower draw (increase resistance) until it stops failing.
+        _voltage = 9999.0
+        passed = False
 
-            # Scope-acquisition with retry
-            data = None
-            attempt = 0
-            while attempt < args.scope_retries:
-                attempt += 1
-                try:
-                    data = capture_startup(R, vin)
-                    break
-                except Exception as e:
-                    print(f"[Scope error] {e}; retry {attempt}/{args.scope_retries} ...")
-                    time.sleep(args.scope_retry_delay)
-                    # Power off before re-arm to avoid latched states
-                    try:
-                        POWER.delete_voltage_dual()
-                    except Exception:
-                        pass
+        while True:
+            # Acquire boot waveform; if scope burps, REPEAT this resistance point
+            try:
+                data = capture_startup(load=resistance, voltage=voltage,
+                                       load_node_name=load_node_name,
+                                       scope_node_name=scope_node_name,
+                                       power_node_name=voltage_node_name)
+            except Exception as e:
+                print(f"[retry same point] Vin={voltage}, R={resistance}Ω due to scope error: {e}")
+                # Repeat current test (do not change resistance)
+                continue
 
-            if data is None:
-                # Could not acquire this point—record as fail and move on
-                print(f"[WARN] Skipping point Vin={vin:.2f}V, Ireq={req_i:.2f}A after retries.")
-                vout, i_meas = (0.0, 0.0)
-                passed = False
-                attempt_idx = args.scope_retries
-            else:
-                # Persist raw waveform
-                write(data, f"reqI_{req_i:.2f}_startup.wav")
+            write(data, f"resistance_{resistance}_startup.wav")
+            _voltage, current = LOAD.get_load_data()
+            currents.append(current)
+            loads.append(resistance)
+            voltages.append(_voltage)
+            plot(data, args.scope_range, currents, voltages, loads)
+            plot3d_update(voltage, 5.0 / resistance if resistance > 0 else 0.0, _voltage)
 
-                # Read instantaneous load data
-                vout, i_meas = get_load_snapshot()
-                passed = (vout >= args.vout_pass_threshold)
-                attempt_idx = 1
+            req_current = 5.0 / resistance if resistance > 0 else 0.0
+            print(f"# R={resistance:.3f} Ω  =>  Vout={_voltage:.3f} V, I={current:.3f} A (req≈{req_current:.3f} A)")
 
-            # Log / plot
-            point = {
-                "vin": float(vin),
-                "req_i": float(req_i),
-                "meas_i": float(i_meas),
-                "vout": float(vout),
-                "R": float(R),
-                "pass": bool(passed),
-                "attempt": attempt_idx
-            }
-            vin_points.append(point)
-            all_points.append(point)
+            # Log CSV
+            with open(csv_path, "a") as f:
+                f.write(f"{voltage:.4f},{req_current:.4f},{current:.4f},{_voltage:.4f},{resistance:.6f},{int(_voltage>=voltage_threshold)}\n")
 
-            print(f"Vin={vin:.2f} V | Ireq={req_i:.2f} A (R={R:.3f} Ω) "
-                  f"=> Vout={vout:.3f} V, Imeas={i_meas:.3f} A | {'PASS' if passed else 'FAIL'}")
-
-            update_plots(all_points, vin)
-
-            # Write incremental CSV row
-            with open(csv_path, "a", newline="") as csvfile:
-                writer = csv.writer(csvfile)
-                writer.writerow([
-                    f"{vin:.4f}", f"{req_i:.4f}", f"{i_meas:.4f}",
-                    f"{vout:.4f}", f"{R:.6f}", int(passed), attempt_idx
-                ])
-
-            # Stop condition:
-            # "the draw shall then be lowered until it stops failing"
-            # -> Start at 5A and step DOWN until we reach the last PASS (i.e., not failing).
-            # In other words: keep reducing current while it's FAIL; once it becomes PASS, stop for this Vin.
-            if passed:
-                print("→ PASS reached; stopping current reduction for this Vin.")
+            # Stop condition: "lower draw until it stops failing"
+            if _voltage >= voltage_threshold:
+                print("PASSED! stopping current reduction for this Vin.")
+                passed = True
                 break
 
-            # Otherwise, reduce current
-            req_i = req_i + args.current_step  # note: default step is negative to lower current
+            # Otherwise, lower draw: increase resistance
+            # Also stop if requested current would go below minimum
+            next_res = resistance + resistance_step
+            next_req_i = 5.0 / next_res if next_res > 0 else 0.0
+            if next_req_i < args.min_current:
+                print(f"Stopping: requested current would drop below {args.min_current} A.")
+                break
+            resistance = next_res
 
-        # Persist per-Vin JSON summary and a snapshot of plots
-        try:
-            out_json = {
-                "vin": vin,
-                "points": vin_points,
-                "vout_pass_threshold": args.vout_pass_threshold
-            }
-            write(json.dumps(out_json), "data.json", type="ascii")
-        except Exception:
-            pass
+        print(f"# stopping at {resistance} ohm producing {_voltage} volts {current} amps with {voltage} volts as input")
+        write(json.dumps({"currents": currents, "voltages": voltages, "loads": loads}), "data.json", type="ascii")
+        plt.savefig(f"{get_path()}/plot.png")
+        LOAD.delete_load()
 
-        if not args.no_plot:
-            try:
-                plt.savefig(os.path.join(get_path(), f"plot_{vin:.2f}V.png"))
-            except Exception:
-                pass
+    LOAD.delete_load()
+    POWER.delete_powersupply()
+    print(f"\nCSV written: {csv_path}")
 
-        # Reset load for next Vin
-        try:
-            LOAD.delete_load()
-        except Exception:
-            pass
-        try:
-            POWER.delete_powersupply()
-        except Exception:
-            pass
+plt.show(block=False)
 
-    print(f"\nDone. CSV written to: {csv_path}")
-    if not args.no_plot:
-        plt.ioff()
-        plt.show(block=False)
-
-if __name__ == "__main__":
-    main()
+# Use CLI params to drive sweep
+sweep_sweep(
+    min_voltage=args.min_v,
+    max_voltage=args.max_v,
+    voltage_step=args.v_step,
+    voltage_node_name=args.power_node,
+    start_current=args.start_current,
+    resistance_step=args.resistance_step,
+    voltage_threshold=args.vout_threshold,
+    load_node_name=args.load_node,
+    scope_node_name=args.scope_node,
+)
