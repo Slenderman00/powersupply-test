@@ -455,8 +455,7 @@ def main():
     all_points = []
 
     for vin in inclusive_arange(args.min_v, args.max_v, args.v_step):
-        print(f"
-### Input voltage {vin:.2f} V")
+        print(f"### Input voltage {vin:.2f} V")
         write, get_path = storage.create_folder(vin)
 
         req_i = args.start_current
