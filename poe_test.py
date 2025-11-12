@@ -540,8 +540,7 @@ def main():
         except Exception:
             pass
 
-    print(f"
-Done. CSV written to: {csv_path}")
+    print(f"Done. CSV written to: {csv_path}")
     if not args.no_plot:
         plt.ioff()
         plt.show(block=False)
