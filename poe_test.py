@@ -32,7 +32,9 @@ namespaces = {
 # --------------------------
 # CLI
 # --------------------------
-parser = argparse.ArgumentParser(description="PoE shield PSU test with robust scope averaging, live 3D plot, CSV, current refinement, and hold-time test.")
+parser = argparse.ArgumentParser(
+    description="PoE shield PSU test: scope-captured boot per point (for PASS/FAIL) + optional current refinement, and load-only hold-time test."
+)
 
 # Required infra
 parser.add_argument("--config", required=True, help="Path to the NETCONF config XML (ietf-networks + topology).")
@@ -51,31 +53,29 @@ parser.add_argument("--v-step", type=float, default=0.5, help="Voltage step (V)"
 parser.add_argument("--start-current", type=float, default=5.0, help="Starting draw (A) at each input voltage")
 parser.add_argument("--min-current", type=float, default=0.2, help="Lowest current to try before giving up (A)")
 parser.add_argument("--current-step", type=float, default=-0.25, help="Current step (A); negative lowers draw")
-parser.add_argument("--vout-pass-threshold", type=float, default=4.75, help="PASS threshold for 5 V rail, based on scope average (V)")
+parser.add_argument("--vout-pass-threshold", type=float, default=4.75, help="PASS threshold for 5 V rail, based on scope avg (V)")
 
-# Refinement (feature 1)
-parser.add_argument("--refine", action="store_true", help="After first PASS per Vin, refine to find the highest passing current (binary search)")
-parser.add_argument("--refine-min-step", type=float, default=0.02, help="Stop refining when bracket width < this (A)")
-parser.add_argument("--refine-max-iter", type=int, default=10, help="Safety cap on refinement iterations")
-
-# Hold-time test (feature 2)
-parser.add_argument("--hold-test", action="store_true", help="Measure how long the PSU can hold the highest passing current until Vout dips below threshold on a downward slope")
-parser.add_argument("--hold-threshold", type=float, default=4.5, help="Vout threshold for hold test (V)")
-parser.add_argument("--hold-timeout", type=float, default=120.0, help="Max seconds to wait during hold test before timing out")
-parser.add_argument("--hold-poll-period", type=float, default=0.02, help="Polling period (s) when sampling Vout for hold-time detection")
-
-# Scope acquisition / retries
+# Scope acquisition / retries (for boot capture)
 parser.add_argument("--scope-threshold", type=float, default=1.0, help="Scope trigger level")
 parser.add_argument("--scope-samples", type=int, default=1000, help="Scope samples")
 parser.add_argument("--scope-rate", type=int, default=20000, help="Scope sample rate (Hz)")
 parser.add_argument("--scope-channel", default="ch1", help="Scope channel")
 parser.add_argument("--scope-retries", type=int, default=3, help="Retries on scope errors per point")
 parser.add_argument("--scope-retry-delay", type=float, default=0.5, help="Delay between scope retries (s)")
-
-# Robust averaging controls
 parser.add_argument("--scope-range", type=float, default=16.0, help="Scope voltage range used for mapping")
 parser.add_argument("--smooth-win", type=int, default=25, help="Moving-average window (samples) for smoothing")
 parser.add_argument("--trim-percent", type=float, default=0.10, help="Winsorize fraction (0.10 = clip 10% tails)")
+
+# Refinement
+parser.add_argument("--refine", action="store_true", help="After first PASS per Vin, binary search to find the highest passing current")
+parser.add_argument("--refine-min-step", type=float, default=0.02, help="Stop refining when bracket width < this (A)")
+parser.add_argument("--refine-max-iter", type=int, default=10, help="Safety cap on refinement iterations")
+
+# Hold-time test (load-only)
+parser.add_argument("--hold-test", action="store_true", help="Measure how long the PSU can hold the highest passing current using only load readings")
+parser.add_argument("--hold-threshold", type=float, default=4.5, help="Vout threshold for hold test (V)")
+parser.add_argument("--hold-timeout", type=float, default=120.0, help="Max seconds to wait during hold test before timing out")
+parser.add_argument("--hold-poll-period", type=float, default=0.02, help="Polling period (s) when sampling Vout for hold-time detection")
 
 # Plot
 parser.add_argument("--no-plot", action="store_true", help="Disable live plotting (useful for headless runs)")
@@ -101,6 +101,7 @@ SCOPE = Scope(yconns, conns, node_name=args.scope_node)
 # --------------------------
 # Helpers
 # --------------------------
+
 def data_to_signal(data, rng=16.0):
     f = io.BytesIO(data)
     spf = wave.open(f, "r")
@@ -111,12 +112,6 @@ def data_to_signal(data, rng=16.0):
 
 
 def get_scope_metrics(data, rng=16.0, smooth_win=25, trim_percent=0.10):
-    """
-    Robust voltage metrics from the LAST QUARTER of the scope trace:
-      - moving-average smoothing
-      - winsorized (clipped) mean to resist spikes
-    Returns dict: avg_v, v_min, v_max, v_std, ripple_pp, n
-    """
     sig = data_to_signal(data, rng=float(rng))
     n = len(sig)
     if n == 0:
@@ -127,7 +122,6 @@ def get_scope_metrics(data, rng=16.0, smooth_win=25, trim_percent=0.10):
     if tail.size == 0:
         tail = sig[-1:]
 
-    # Moving-average smoothing
     win = max(1, int(smooth_win))
     if tail.size >= win and win > 1:
         kernel = np.ones(win, dtype=np.float32) / float(win)
@@ -135,7 +129,6 @@ def get_scope_metrics(data, rng=16.0, smooth_win=25, trim_percent=0.10):
     else:
         smooth = tail
 
-    # Winsorize extremes
     p = float(trim_percent)
     if smooth.size > 1 and 0.0 < p < 0.5:
         lo = np.percentile(smooth, p * 100.0)
@@ -259,7 +252,7 @@ def get_load_snapshot():
     return float(vout), float(i_meas)
 
 # --------------------------
-# Core point runner + refinement + hold-time
+# Core point runner + refinement + hold-time (load-only)
 # --------------------------
 
 def log_point(csv_path, point):
@@ -283,7 +276,7 @@ def log_point(csv_path, point):
         ])
 
 
-def run_point(vin, req_i, storage_write, label_prefix, all_points, csv_path, trigger_slope="positive"):
+def run_point(vin, req_i, storage_write, label_prefix, all_points, csv_path):
     R = current_to_resistance(req_i)
 
     data = None
@@ -291,7 +284,7 @@ def run_point(vin, req_i, storage_write, label_prefix, all_points, csv_path, tri
     while attempt < args.scope_retries:
         attempt += 1
         try:
-            data = capture_startup(R, vin, trigger_slope=trigger_slope)
+            data = capture_startup(R, vin)
             break
         except Exception as e:
             print(f"[Scope error] {e}; retry {attempt}/{args.scope_retries} ...")
@@ -356,17 +349,13 @@ def run_point(vin, req_i, storage_write, label_prefix, all_points, csv_path, tri
 
 
 def refine_max_current(vin, last_fail_i, last_pass_i, storage_write, all_points, csv_path):
-    """Binary-search the boundary between FAIL (too high I) and PASS.
-    Returns (best_pass_i, best_point).
-    """
     if last_pass_i is None:
         return None, None
     if last_fail_i is None:
-        # Nothing to bracket; can't refine
         return last_pass_i, None
 
-    lo = last_pass_i  # known PASS
-    hi = last_fail_i  # known FAIL (higher current)
+    lo = last_pass_i  # PASS
+    hi = last_fail_i  # FAIL (higher current)
 
     best_i = lo
     best_point = None
@@ -385,31 +374,17 @@ def refine_max_current(vin, last_fail_i, last_pass_i, storage_write, all_points,
     return best_i, best_point
 
 
-def measure_hold_time(vin, hold_current_a, storage_write):
-    """Measure time at a fixed current until Vout dips below hold-threshold on a DOWNWARD slope.
-    We configure the scope with a negative slope & the threshold, and also poll the load voltage at a
-    small interval to detect the first crossing on a falling edge. Returns time (s) or None on timeout.
+def measure_hold_time(vin, hold_current_a):
+    """Hold-time using only load readings: apply fixed current and poll Vout until
+    (Vout < hold_threshold) and (falling vs previous sample). Returns seconds or None on timeout.
     """
     R = current_to_resistance(hold_current_a)
-
-    # Try to have the scope armed with the intended trigger
     try:
         POWER.delete_voltage_dual()
-        LOAD.set_resistance(R)
-        SCOPE.start_acquisition(
-            args.scope_samples,
-            args.scope_rate,
-            args.scope_channel,
-            "negative",  # falling-edge trigger
-            args.hold_threshold,
-            args.scope_channel,
-            16,
-            "-",
-        )
-        POWER.set_voltage_dual(vin)
-    except Exception as e:
-        print(f"[Hold] Failed to arm scope for hold-time: {e}")
-        # Still proceed with polling approach
+    except Exception:
+        pass
+    LOAD.set_resistance(R)
+    POWER.set_voltage_dual(vin)
 
     t0 = time.monotonic()
     last_v = None
@@ -461,8 +436,8 @@ def main():
             "computed_resistance_ohm",
             "pass",
             "attempt",
-            "refined",          # 0 normal sweep, 1 refinement point
-            "hold_time_s",      # only filled for the final max-pass current measurement
+            "refined",
+            "hold_time_s",
         ])
 
     storage = storageBucket()
@@ -480,7 +455,8 @@ def main():
     all_points = []
 
     for vin in inclusive_arange(args.min_v, args.max_v, args.v_step):
-        print(f"\n### Input voltage {vin:.2f} V")
+        print(f"
+### Input voltage {vin:.2f} V")
         write, get_path = storage.create_folder(vin)
 
         req_i = args.start_current
@@ -497,12 +473,10 @@ def main():
                 last_fail_i = req_i
             req_i = req_i + args.current_step  # negative by default
 
-        # If we never passed, record and move on
         if last_pass_i is None:
             print("→ No PASS reached for this Vin.")
         else:
             print(f"→ PASS reached at ~{last_pass_i:.3f} A.")
-            # Optional refinement to pinpoint the exact maximum passing current
             best_i = last_pass_i
             best_point = None
             if args.refine:
@@ -512,22 +486,21 @@ def main():
                     best_point = bp
                 print(f"→ Refined max PASS current ≈ {best_i:.3f} A")
 
-            # Optional hold-time test at the refined maximum current
             if args.hold_test:
-                print("→ Measuring hold time at refined current ...")
-                hold_s = measure_hold_time(vin, best_i, write)
+                print("→ Measuring hold time at refined current (load-only) ...")
+                hold_s = measure_hold_time(vin, best_i)
                 if hold_s is None:
                     print(f"   Hold test timed out after {args.hold_timeout:.1f} s (no dip < {args.hold_threshold:.2f} V detected).")
                 else:
                     print(f"   Hold time until Vout < {args.hold_threshold:.2f} V (falling) = {hold_s:.3f} s")
 
-                # Log a synthetic row capturing hold time at the best current
+                # Log a summary row capturing hold time at the best current
                 vout, imeas = get_load_snapshot()
                 point = {
                     "vin": float(vin),
                     "req_i": float(best_i),
                     "meas_i": float(imeas),
-                    "vout_scope": float(vout),  # store DC snapshot here for convenience
+                    "vout_scope": float(vout),  # convenience: store DC here
                     "vout_load": float(vout),
                     "vmin": 0.0,
                     "vmax": 0.0,
@@ -567,7 +540,8 @@ def main():
         except Exception:
             pass
 
-    print(f"\nDone. CSV written to: {csv_path}")
+    print(f"
+Done. CSV written to: {csv_path}")
     if not args.no_plot:
         plt.ioff()
         plt.show(block=False)
