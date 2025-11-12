@@ -75,7 +75,7 @@ parser.add_argument("--refine-max-iter", type=int, default=10, help="Safety cap 
 parser.add_argument("--hold-test", action="store_true", help="Measure how long the PSU can hold the highest passing current using only load readings")
 parser.add_argument("--hold-threshold", type=float, default=4.5, help="Vout threshold for hold test (V)")
 parser.add_argument("--hold-timeout", type=float, default=120.0, help="Max seconds to wait during hold test before timing out")
-parser.add_argument("--hold-poll-period", type=float, default=0.02, help="Polling period (s) when sampling Vout for hold-time detection")
+parser.add_argument("--hold-poll-period", type=float, default=5.0, help="Polling period (s) when sampling Vout for hold-time detection")
 
 # Plot
 parser.add_argument("--no-plot", action="store_true", help="Disable live plotting (useful for headless runs)")
